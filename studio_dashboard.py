@@ -1,12 +1,61 @@
 # studio_dashboard.py
 # -------------------------------------
-# Interactive Fitness Studio Dashboard
+# Interactive Fitness Studio Dashboard (with Passcode)
 # -------------------------------------
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import altair as alt
+
+# ---------------------
+# Passcode Protection (Session State)
+# ---------------------
+import streamlit as st
+
+st.set_page_config(page_title="Studio Performance Dashboard", layout="wide")
+
+# Try to read passcode from secrets; fallback to default
+try:
+    PASSCODE = st.secrets["DASH_PASS"]
+except Exception:
+    PASSCODE = "areve123"  # fallback default
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+def _login():
+    if st.session_state._pass_try == PASSCODE:
+        st.session_state.authenticated = True
+        # rerun for both new and older Streamlit versions
+        if hasattr(st, "rerun"):
+            st.rerun()
+        else:
+            st.experimental_rerun()
+
+st.title("🔒 Secure Access - Areve Studio Dashboard")
+
+if not st.session_state.authenticated:
+    st.text_input(
+        "Enter passcode to access the dashboard:",
+        type="password",
+        key="_pass_try",
+        on_change=_login
+    )
+    # If user typed something wrong, show an error
+    if st.session_state.get("_pass_try"):
+        st.error("❌ Incorrect passcode. Please try again.")
+    st.stop()
+
+# Optional: logout
+if st.sidebar.button("Log out"):
+    st.session_state.clear()
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
 
 # ---------------------
 # Load cleaned dataset
@@ -25,7 +74,6 @@ def load_data():
 
 df = load_data()
 
-st.set_page_config(page_title="Studio Performance Dashboard", layout="wide")
 st.title("🏋️ Areve Studio Performance Dashboard")
 
 # ---------------------
@@ -137,6 +185,113 @@ chart4 = (
     .properties(height=300)
 )
 st.altair_chart(chart4, use_container_width=True)
+
+
+
+## Scorecards
+
+st.markdown("### 🧑‍🏫 Instructor Scorecards")
+score = (
+    filtered.groupby("Entrenador", as_index=False)
+    .agg(AvgOcc=("CapacityUtilization","mean"),
+         AvgNoShow=("NoShowRate","mean"),
+         N=("CapacityUtilization","size"))
+)
+st.dataframe(score.sort_values(["AvgOcc","N"], ascending=[False,False]).style.format({
+    "AvgOcc":"{:.0%}", "AvgNoShow":"{:.0%}"
+}))
+
+
+
+#Heatmap test
+# ==== Heatmaps with min-classes filter (robust) ====
+st.markdown("### 🔥 Heatmaps (min class threshold)")
+
+if filtered.empty:
+    st.info("No classes match the current filters. Adjust filters to view heatmaps.")
+else:
+    # Ensure proper types/order
+    if "Weekday" in filtered.columns:
+        filtered["Weekday"] = pd.Categorical(
+            filtered["Weekday"],
+            categories=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"],
+            ordered=True
+        )
+    if "Hour" in filtered.columns:
+        # keep numeric hours clean for grouping/axis
+        filtered["Hour"] = pd.to_numeric(filtered["Hour"], errors="coerce")
+
+    # Sidebar control for heatmap threshold
+    with st.sidebar.expander("Heatmap settings"):
+        MIN_CLASSES_HEAT = st.number_input(
+            "Min classes per Weekday×Hour cell",
+            min_value=1, value=3, step=1
+        )
+
+    def _heat_df(df, value_col, min_n):
+        """Aggregate by Weekday×Hour; keep only cells with at least min_n classes."""
+        need_cols = {"Weekday", "Hour", value_col}
+        if not need_cols.issubset(df.columns):
+            return None
+
+        d = df.dropna(subset=["Weekday","Hour", value_col]).copy()
+
+        # Group with observed=True to avoid expanding to all category levels
+        g = d.groupby(["Weekday","Hour"], observed=True)
+
+        # Compute mean and size separately to avoid pandas named-agg bug
+        mean_df = g[value_col].mean().reset_index(name="value")
+        size_df = g.size().reset_index(name="n")
+
+        out = mean_df.merge(size_df, on=["Weekday","Hour"], how="inner")
+        out = out.query("n >= @min_n")
+
+        # Make Hour nice for display (optional)
+        if "Hour" in out.columns:
+            try:
+                out["Hour"] = out["Hour"].astype(int)
+            except Exception:
+                pass
+        return out
+
+    # ---- Occupancy heatmap ----
+    st.markdown("#### Avg Occupancy by Weekday × Hour")
+    occ_df = _heat_df(filtered, "CapacityUtilization", MIN_CLASSES_HEAT)
+    if occ_df is None or occ_df.empty:
+        st.caption("Not enough data for occupancy heatmap with the current threshold.")
+    else:
+        chart_occ = alt.Chart(occ_df).mark_rect().encode(
+            x=alt.X("Hour:O", title="Hour"),
+            y=alt.Y("Weekday:N", sort=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]),
+            color=alt.Color("value:Q", title="Avg Occupancy", scale=alt.Scale(domain=[0,1])),
+            tooltip=[
+                alt.Tooltip("Weekday:N"),
+                alt.Tooltip("Hour:O", title="Hour"),
+                alt.Tooltip("value:Q", title="Avg Occupancy", format=".0%"),
+                alt.Tooltip("n:Q", title="# Classes")
+            ]
+        ).properties(height=260)
+        st.altair_chart(chart_occ, use_container_width=True)
+
+    # ---- No-show heatmap ----
+    st.markdown("#### Avg No-Show by Weekday × Hour")
+    ns_df = _heat_df(filtered, "NoShowRate", MIN_CLASSES_HEAT)
+    if ns_df is None or ns_df.empty:
+        st.caption("Not enough data for no-show heatmap with the current threshold.")
+    else:
+        chart_ns = alt.Chart(ns_df).mark_rect().encode(
+            x=alt.X("Hour:O", title="Hour"),
+            y=alt.Y("Weekday:N", sort=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]),
+            color=alt.Color("value:Q", title="Avg No-Show", scale=alt.Scale(domain=[0,1])),
+            tooltip=[
+                alt.Tooltip("Weekday:N"),
+                alt.Tooltip("Hour:O", title="Hour"),
+                alt.Tooltip("value:Q", title="Avg No-Show", format=".0%"),
+                alt.Tooltip("n:Q", title="# Classes")
+            ]
+        ).properties(height=260)
+        st.altair_chart(chart_ns, use_container_width=True)
+
 
 # ---------------------
 # Table Section
