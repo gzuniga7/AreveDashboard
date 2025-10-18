@@ -55,8 +55,6 @@ if st.sidebar.button("Log out"):
     else:
         st.experimental_rerun()
 
-
-
 # ---------------------
 # Load cleaned dataset
 # ---------------------
@@ -152,17 +150,22 @@ st.altair_chart(chart2, use_container_width=True)
 
 # Hourly trend
 st.markdown("### ⏰ Attendance by Hour of Day")
+MIN_CLASSES_GRAPH = 5 #Minimum Number of Classes To be Included in the Graph
+
 hour_chart = (
-    filtered.groupby("Hour", as_index=False)["CapacityUtilization"]
-    .mean()
+    filtered.groupby("Hour", as_index=False)
+    .agg(AvgOcc=("CapacityUtilization", "mean"), n=('CapacityUtilization', 'size'))
+    .query("n >= @MIN_CLASSES_GRAPH")      
+    .sort_values("Hour")
+
 )
 chart3 = (
     alt.Chart(hour_chart)
     .mark_line(point=True)
     .encode(
         x=alt.X("Hour:O", title="Hour of Day"),
-        y=alt.Y("CapacityUtilization:Q", title="Avg Occupancy", axis=alt.Axis(format="%")),
-        tooltip=["Hour", alt.Tooltip("CapacityUtilization", format=".0%")]
+        y=alt.Y("AvgOcc:Q", title="Avg Occupancy", axis=alt.Axis(format="%")),
+        tooltip=["Hour", alt.Tooltip("AvgOcc:Q", title='Avg Occupancy', format=".0%"),alt.Tooltip("n:Q", title="# Classes")]
     )
     .properties(height=300)
 )
@@ -171,16 +174,22 @@ st.altair_chart(chart3, use_container_width=True)
 # Weekday trend
 st.markdown("### 📅 Attendance by Weekday")
 weekday_chart = (
-    filtered.groupby("Weekday", as_index=False)["CapacityUtilization"]
-    .mean()
-)
+        filtered.groupby("Weekday", as_index=False)
+                .agg(AvgOcc=("CapacityUtilization","mean"),
+                     n=("CapacityUtilization","size"))
+                .sort_values("Weekday")
+    )
 chart4 = (
     alt.Chart(weekday_chart)
     .mark_line(point=True, strokeDash=[3,2])
     .encode(
         x=alt.X("Weekday:N", sort=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]),
-        y=alt.Y("CapacityUtilization:Q", title="Avg Occupancy", axis=alt.Axis(format="%")),
-        tooltip=["Weekday", alt.Tooltip("CapacityUtilization", format=".0%")]
+        y=alt.Y("AvgOcc:Q", title="Avg Occupancy", axis=alt.Axis(format="%")),
+        tooltip=[
+                alt.Tooltip("Weekday:N", title="Weekday"),
+                alt.Tooltip("AvgOcc:Q", title="Avg Occupancy", format=".0%"),
+                alt.Tooltip("n:Q", title="# Classes")
+            ]
     )
     .properties(height=300)
 )
@@ -188,21 +197,35 @@ st.altair_chart(chart4, use_container_width=True)
 
 
 
-## Scorecards
+## Instructor Stats
 
-st.markdown("### 🧑‍🏫 Instructor Scorecards")
+st.markdown("### 🧑‍🏫 Instructor Stats")
+
 score = (
     filtered.groupby("Entrenador", as_index=False)
-    .agg(AvgOcc=("CapacityUtilization","mean"),
-         AvgNoShow=("NoShowRate","mean"),
-         N=("CapacityUtilization","size"))
+    .agg(
+        AvgOcc=("CapacityUtilization", "mean"),
+        AvgNoShow=("NoShowRate", "mean"),
+        N=("CapacityUtilization", "size")
+    )
 )
-st.dataframe(score.sort_values(["AvgOcc","N"], ascending=[False,False]).style.format({
-    "AvgOcc":"{:.0%}", "AvgNoShow":"{:.0%}"
-}))
 
+# Rename columns for display
+score = score.rename(columns={
+    "Entrenador": "Instructor",
+    "AvgOcc": "Avg Occupancy",
+    "AvgNoShow": "Avg No-Show",
+    "N": "# Classes"
+})
 
-
+# Display table with formatting
+st.dataframe(
+    score.sort_values(["Avg Occupancy", "# Classes"], ascending=[False, False])
+         .style.format({
+             "Avg Occupancy": "{:.0%}",
+             "Avg No-Show": "{:.0%}"
+         })
+)
 #Heatmap test
 # ==== Heatmaps with min-classes filter (robust) ====
 st.markdown("### 🔥 Heatmaps (min class threshold)")
@@ -263,7 +286,7 @@ else:
         chart_occ = alt.Chart(occ_df).mark_rect().encode(
             x=alt.X("Hour:O", title="Hour"),
             y=alt.Y("Weekday:N", sort=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]),
-            color=alt.Color("value:Q", title="Avg Occupancy", scale=alt.Scale(domain=[0,1])),
+            color=alt.Color("value:Q", title="Avg Occupancy", scale=alt.Scale(scheme="spectral", domain=[0, 1])),
             tooltip=[
                 alt.Tooltip("Weekday:N"),
                 alt.Tooltip("Hour:O", title="Hour"),
@@ -292,14 +315,84 @@ else:
         ).properties(height=260)
         st.altair_chart(chart_ns, use_container_width=True)
 
+# ==========================
+# 📅 Month-by-Month Performance (uses current filters)
+# ==========================
+st.markdown("## 📅 Studio Performance – Month by Month (Filtered)")
 
-# ---------------------
-# Table Section
-# ---------------------
-st.markdown("### 📋 Detailed Data Preview")
-st.dataframe(filtered[[
-    "Date","Disciplina","Entrenador","Hour","Capacity","Bookings","Attended","NoShows",
-    "CapacityUtilization","BookingRate","NoShowRate"
-]].round(2))
+if filtered.empty:
+    st.info("No classes match the current filters. Adjust the date range, discipline, or instructor to see monthly trends.")
+else:
+    # Ensure types
+    filtered = filtered.copy()
+    filtered["Date"] = pd.to_datetime(filtered["Date"], errors="coerce")
+    for c in ["CapacityUtilization","BookingRate","NoShowRate"]:
+        if c in filtered.columns:
+            filtered[c] = pd.to_numeric(filtered[c], errors="coerce")
 
-st.caption("Data source: classes_cleaned.csv — updated automatically when new sessions are added.")
+    perf_f = (
+        filtered.dropna(subset=["Date"])
+                .assign(YearMonth=lambda d: d["Date"].dt.to_period("M").astype(str))
+                .groupby("YearMonth", as_index=False)
+                .agg(
+                    AvgOcc=("CapacityUtilization", "mean"),
+                    AvgBook=("BookingRate", "mean"),
+                    AvgNoShow=("NoShowRate", "mean"),
+                    Classes=("CapacityUtilization", "size")
+                )
+    )
+
+    if perf_f.empty:
+        st.caption("Not enough valid monthly data for the current filter selection.")
+    else:
+        # Sort chronologically
+        perf_f["YearMonth_dt"] = pd.to_datetime(perf_f["YearMonth"])
+        perf_f = perf_f.sort_values("YearMonth_dt")
+
+        # Simple helper
+        def _fmt_pct(x): 
+            try: return f"{x:.0%}"
+            except: return "—"
+
+        # KPI tiles (last month in filtered view)
+        last_row = perf_f.iloc[-1]
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Avg Occupancy (last month)", _fmt_pct(last_row["AvgOcc"]))
+        col2.metric("Avg Booking Rate (last month)", _fmt_pct(last_row["AvgBook"]))
+        col3.metric("Avg No-Show (last month)", _fmt_pct(last_row["AvgNoShow"]))
+
+        # Trend line (filtered)
+        chart_month_f = (
+            alt.Chart(perf_f)
+            .transform_fold(
+                ["AvgOcc","AvgBook","AvgNoShow"],
+                as_=["Metric","Value"]
+            )
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("YearMonth:N", title="Month"),
+                y=alt.Y("Value:Q", title="Percentage", axis=alt.Axis(format="%")),
+                color=alt.Color("Metric:N", title=None),
+                tooltip=[
+                    alt.Tooltip("YearMonth:N", title="Month"),
+                    alt.Tooltip("Metric:N", title="Metric"),
+                    alt.Tooltip("Value:Q", title="Value", format=".0%")
+                ]
+            )
+            .properties(height=350)
+        )
+        st.altair_chart(chart_month_f, use_container_width=True)
+
+        # Optional: classes per month (filtered)
+        st.markdown("### 🧾 Number of Classes per Month (Filtered)")
+        bar_f = (
+            alt.Chart(perf_f)
+            .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+            .encode(
+                x=alt.X("YearMonth:N", title="Month"),
+                y=alt.Y("Classes:Q", title="Class Count"),
+                tooltip=["YearMonth","Classes"]
+            )
+            .properties(height=250)
+        )
+        st.altair_chart(bar_f, use_container_width=True)
