@@ -226,6 +226,50 @@ st.dataframe(
              "Avg No-Show": "{:.0%}"
          })
 )
+
+# ==========================
+# 🚴 Indoor Cycling – Attendance Buckets by Coach
+# ==========================
+st.markdown("## 🚴 Indoor Cycling – Attendance Buckets by Coach")
+
+cycling_df = filtered[
+    (filtered["Disciplina"] == "Indoor Cycling") &
+    (filtered["IC_AttendanceBucket"].notna())
+].copy()
+
+if cycling_df.empty:
+    st.info("No Indoor Cycling classes found for the selected date range.")
+else:
+    bucket_table = (
+        cycling_df
+        .groupby(["Entrenador", "IC_AttendanceBucket"])
+        .size()
+        .reset_index(name="Classes")
+        .pivot(
+            index="Entrenador",
+            columns="IC_AttendanceBucket",
+            values="Classes"
+        )
+        .fillna(0)
+        .astype(int)
+        .reset_index()
+    )
+
+    # Ensure consistent column order if present
+    desired_cols = ["(1-5)", "(6-10)", "(11-14)"]
+    for c in desired_cols:
+        if c not in bucket_table.columns:
+            bucket_table[c] = 0
+
+    bucket_table["Total Classes"] = bucket_table[desired_cols].sum(axis=1)
+
+    bucket_table = bucket_table[
+        ["Entrenador"] + desired_cols + ["Total Classes"]
+    ].sort_values("Total Classes", ascending=False)
+
+    st.dataframe(bucket_table)
+
+
 #Heatmap test
 # ==== Heatmaps with min-classes filter (robust) ====
 st.markdown("### 🔥 Heatmaps (min class threshold)")
